@@ -1,0 +1,712 @@
+---
+title: "Police Challenge"
+author: " "
+date: "10/05/2017"
+output: html_document
+fig_caption: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+ #install.packages(c("rlang","tidyr","ggplot2","reshape2","stringi","purrr","bit64","RColorBrewer","scales","plyr","foreign","stringr","lubridate","xtable","maptools","sp","rgdal","spatstat","acs"))
+
+ #install.packages("gpclib")
+ #install.packages("rgdal")
+ #install.packages("maps")
+library(rgdal)
+library(maptools)
+ 
+require(rlang)
+require(tidyr)
+require(dplyr)
+require(ggplot2)
+library(reshape2)
+library(stringi)
+library(purrr)
+library(bit64)
+library(maps)
+library(RColorBrewer)
+library(scales)
+library(plyr)
+#library(choroplethr)
+#install.packages("choroplethr")
+library(acs)
+
+## Crime Incident Plots
+library(ggplot2)
+library(foreign)
+library(stringr)
+library(lubridate)
+library(plyr)
+library(xtable)
+library(scales)
+library(RColorBrewer)
+#install.packages("ggthemes")
+#install.packages("ggmap")
+library(ggmap)
+library(ggthemes)
+
+## gis libraries
+library(maptools)
+library(sp)
+library(rgdal)
+library(spatstat)
+
+```
+
+### Load Data Set: Baltimore_Call for Service:
+```{r}
+Baltimore911CallForService = read.csv("911_Calls_for_Service.csv")
+```
+
+```{r pre-processing}
+attach(Baltimore911CallForService)
+
+callService = data.frame(Baltimore911CallForService)
+
+#Backup of data: Do not move!!!
+callServiceBackup = data.frame(Baltimore911CallForService)
+#-------------------------------
+# Correct the format of date: YYYYMMDDHHMM (24h)
+  correctDatePolice = function (str) {
+    c1 = strsplit(x = str, split = "/|:| ")
+    dateTime = c1[[1]]
+    return(paste(dateTime[3],dateTime[1],dateTime[2],dateTime[4],dateTime[5],sep = ""))
+  }
+  str = array(callService$callDateTime)
+  callService$callDateTime = apply(str,1,correctDatePolice)
+#-----------------------------------------------  
+
+#Label call cases
+callService$ID = c(1:length(callService$callDateTime))
+#----------------------------------------------- 
+
+#Split Latitude and Longitutde
+num <- "([[:digit:]\\.\\-]+)"
+space <- "[[:space:]]+"
+lp <- "\\("
+rp <- "\\)"
+comma <- ","
+
+match_str <-lp %s+% num %s+% comma %s+% num %s+% rp
+
+callService = extract(callService,location,into =  c("Latitude", "Longitude"), regex = match_str,remove = FALSE)
+
+callService$Latitude = as.numeric(callService$Latitude)
+
+callService$Longitude = as.numeric(callService$Longitude)
+#----------------------------------------------- 
+
+#Correct invalid police call data, detail of "invalid" is on google drive
+str = as.factor(callService$description)
+Useless911CallLevel<-levels(as.factor(grep('911', callService$description, value=TRUE)))
+
+str= callService$description
+correctNoVoice= function(str){
+  return(
+    gsub(x = str,pattern = ".*911.*",replacement = "911 invalid call"))
+}
+callService$description = correctNoVoice(str)
+#----------------------------------------------- 
+#Set up Correct Geo boundary for Baltimore City
+
+BaltimoreGeoBoundary =list("1NW" = c(39.37195703067297,-76.71129366997027), "2NE" = c(39.37197190004332,-76.52967423510157), "3SE" = c(39.20962295330451,-76.52985830094921), "4S" = c(39.197233450625134,-76.54972531264977),"5SSW1"=c(39.20812053179621,-76.58367312662826),"6SSW2" = c(39.23439454752913,-76.61161075881019),"7SW" = c(39.27783849660702,-76.71116134911031))
+#----------------------------------------------- 
+
+#Setup Approximate Boundary with some margin error with ER = 0.5 (kind of large), ER may be due to data of different software for telling the location. 
+ER = 0.1
+BaltimoreGeoBoundary =list("1NW" = c(39.3720+ER,-76.7113-ER), "2NE" = c(39.3720+ER,-76.5297+ER), "3SE" = c(39.2096,-76.5299), "4S" = c(39.1972-ER,-76.5497),"5SSW1"=c(39.2081,-76.5837),"6SSW2" = c(39.2344,-76.6116),"7SW" = c(39.2778,-76.7112))
+#----------------------------------------------- 
+
+#Record the rectangular shape to us later
+ lat = callService$Latitude
+  long = callService$Longitude
+  maxGeoLat = BaltimoreGeoBoundary$`1NW`[1]
+  minGeoLat = BaltimoreGeoBoundary$`4S`[1]
+  minGeoLong = BaltimoreGeoBoundary$`1NW`[2]
+  maxGeoLong = BaltimoreGeoBoundary$`2NE`[2]
+  
+  #This treat the city as a rectangular instead of a trapezoid
+  cityGeneralBound = c(maxGeoLat,minGeoLat,maxGeoLong,minGeoLong)
+  
+   outBound = which(!((lat< maxGeoLat& lat > minGeoLat)
+                     &(long > minGeoLong & long < maxGeoLong)))
+  
+  #Set tag to call happens at a location outside the city
+  callService$MissingGeoLocation = 0
+  callService[outBound,]$MissingGeoLocation = 1
+```
+
+```{r spliUsingLaAndLo}
+# maxCallLatitude = max(callService$Latitude,na.rm = TRUE)
+# minCallLatitude = min(callService$Latitude,na.rm = TRUE)
+# maxCallLongitude = max(callService$Longitude,na.rm = TRUE)
+# minCallLongitude = min(callService$Longitude,na.rm = TRUE)
+# c(minCallLatitude,maxCallLatitude)
+# c(minCallLongitude,maxCallLongitude)
+# 
+# callService[1732505,]
+# ##Row 1732505, La = 39.293037, Lo = -76.644014
+# ##Bounding box of Baltimore 39.721302, -76.895596, 39.156623, -76.287689 (NWSE)
+# ## CD 39.4430742652612, -76.616318919138 
+# ##incidentLocation: W MULBERRY ST & N MOUNT ST (using "$")
+# 
+# #The following code could not be used on "Mydream"
+# map <- get_map(location = 'Baltimore', zoom = 12)
+# ggmap(map)
+# get_map(location = c(lon = -95.3632715, lat = 29.7632836))
+```
+
+```{r test split}
+# callServiceT = callService[50]
+# 
+# num <- "([[:digit:]\\.\\-]+)"
+# space <- "[[:space:]]+"
+# lp <- "\\("
+# rp <- "\\)"
+# comma <- ","
+# 
+# match_str <-lp %s+% num %s+% comma %s+% num %s+% rp
+# 
+# callServiceT = extract(callServiceT,location,into =  c("Latitude", "Longitude"), regex = match_str,remove = FALSE)
+# 
+# #geoloc = callServiceT$location %>%
+#  # stri_match_all_regex(match_str) %>%
+# #  map_df(as_data_frame) %>%
+# #  select(latitude=V2, longitude=V3)
+```
+
+```{r}
+ls(callService)
+district = as.factor(callService$district)
+district
+sort(summary(district))
+description = data.frame(table(callService$priority,callService$description))
+description [description$Freq > 10000]
+Common.crime = subset(description,description$Freq>10000)
+#Clean data
+
+#Sort data by different category and save them
+call.Sort.Description = callService[ order(callService$description),]
+call.Sort.GeoLocation = callService[ order(callService$location),]
+call.Sort.Priority = callService[ order(callService$priority),]
+#-------------------------------------------------
+```
+
+```{r weatherLoad}
+weather = read.csv("GHCN-Daily.csv")
+ls(weather)
+#A lot of point ,y overlap due to the non unique records with respect to location.
+```
+
+
+```{r effective Station Selection And Preprocessing}
+TempGeo = select(weather,NAME,LATITUDE,LONGITUDE,ELEVATION,DATE,TMAX,TMIN,PRCP,SNOW,SNWD,starts_with("WT"),-ends_with("ATTRIBUTES"))
+
+#Create an ID for each record
+TempGeo$ID = c(1:nrow(TempGeo))
+ 
+#Change Fomat of date and add "0000" as the time of the prediction: YYYYMMDDHHMM
+str = array(TempGeo$DATE)
+correctDateWeather = function(str){
+  return(
+    paste(gsub(x = str,pattern = "-",replacement = ""),"0000",sep = ""))
+}
+TempGeo$DATE = apply(str, 1, correctDateWeather)
+#----------------------------------------------------
+
+#NOT USED:Record the latitude and longitude range of weather data-----------
+# maxLatitude = max(TempGeo$LATITUDE)
+# minLatitude = min(TempGeo$LATITUDE)
+# maxLontitude = max(TempGeo$LONGITUDE)
+# minLogtitude = min(TempGeo$LONGITUDE)
+#----------------------------------------------------
+
+#Check range of weather station
+weatherStation.Lat = levels(as.factor(TempGeo$LATITUDE))
+weatherStation.Lat = as.numeric(weatherStation.Lat)
+weatherStation.Long = levels(as.factor(TempGeo$LONGITUDE))
+weatherStation.Long = as.numeric(weatherStation.Long)
+#----------------------------------------------- 
+
+#Filter out the station out side the city rectangular boundary
+ #If inside, keep ID number
+  lat = TempGeo$LATITUDE
+  long = TempGeo$LONGITUDE
+  
+  #Set error range for station location into half of the ER for police call.
+  ERStation = 0.02
+  #Record the Index of weather station inside the city boundary, approximated by rectangular boundary
+  inBound = which(((lat< maxGeoLat-ER+ERStation& lat > minGeoLat+ER-ERStation)
+                     &(long > minGeoLong+ER-ERStation & long < maxGeoLong-ER+ERStation)))
+  #Replace TempGeo with the weather station data within the range of the city rectangular boundary
+   TempGeo = TempGeo[inBound,]
+#-----------------------------------------------
+
+   #Categorize different weather
+  Rain = subset(TempGeo,TempGeo$PRCP > 0)
+  SnowFall = subset(TempGeo,TempGeo$SNOW > 0)
+  SnowDepth = subset(TempGeo, TempGeo$SNWD >0)
+  Fog = subset(TempGeo,TempGeo$WT01>0)
+  HeavyFog = subset(TempGeo,TempGeo$WT02>0)
+  Thunder =  subset(TempGeo,TempGeo$WT03>0)
+  Pellets = subset(TempGeo,TempGeo$WT04>0)
+  Hail = subset(TempGeo,TempGeo$WT05>0)
+  Rime = subset(TempGeo,TempGeo$WT06>0)
+  Hail = subset(TempGeo,TempGeo$WT08>0)
+  Haze = subset(TempGeo,TempGeo$WT09>0)
+  Snow = subset(TempGeo,TempGeo$WT11>0)
+  #Still missing a lot of weather data, need to add or the NA is sunny or cloudy?
+  #----------------------------------------------------
+ cityMap <- get_map(location = "Baltimore", maptype = "roadmap", zoom = 10)
+  p.weatherStation <- ggmap(cityMap)+geom_point(data=TempGeo, aes(x=LONGITUDE,y=LATITUDE),size = 4,color = "purple") 
+  
+  #//Plot and output the plot
+  png(file="weatherStation.png",width=1200,height=1050) #Try to print some plot
+  p.weatherStation
+  dev.off()  
+
+#Unused
+# inRangeStation = data.frame()
+# for (i in 1: length(TempGeo)){
+#   if( (TempGeo$LONGITUDE[i] < BaltimoreGeoBoundary$`1NW`[2]) & 
+#      (TempGeo$LONGITUDE[i] > BaltimoreGeoBoundary$`2NE`[2]) &
+#      (TempGeo$LATITUDE < BaltimoreGeoBoundary$`1NW`[1]) &
+#      (TempGeo$LATITUDE > BaltimoreGeoBoundary$`7SW`[1]) )
+#   cat(TempGeo[i])
+# }
+#--------------------------------------------------------------
+```
+
+```{r priority}
+#Cut priority into different cases
+m = which(call.Sort.Priority$priority == "")
+call.Priority.Empty = call.Sort.Priority[m,]
+
+m = which(call.Sort.Priority$priority == "High")
+call.Priority.High = call.Sort.Priority[m,]
+
+m = which(call.Sort.Priority$priority == "Medium")
+call.Priority.Medium = call.Sort.Priority[m,]
+
+m = which(call.Sort.Priority$priority == "Low")
+call.Priority.Low = call.Sort.Priority[m,]
+
+m = which(call.Sort.Priority$priority == "Non-Emergency")
+call.Priority.NonEmerg = call.Sort.Priority[m,]
+
+m = which(call.Sort.Priority$priority == "Emergency")
+call.Priority.Emerg = call.Sort.Priority[m,]
+
+m = which(call.Sort.Priority$priority == "Out of Service")
+call.Priority.OutServ = call.Sort.Priority[m,]
+rm(m)
+#----------------------------------------------- 
+#Checking for data that do not have priority in these categories. CHECKED
+# dim(call.Priority.Emerg)[1] + dim(call.Priority.NonEmerg)[1]+dim(call.Priority.Empty)[1]+dim(call.Priority.High)[1]+dim(call.Priority.Medium)[1]+dim(call.Priority.Low)[1]+dim(call.Priority.OutServ)[1]
+#----------------------------------------------- 
+```
+
+```{r long and lat in callService}
+
+
+#If the location is "(,)",,then using Google API to find the correct geo location and save it. I deide not to use this because I have labeled all the location data that is out side of the region of Baltimore City, including 0,0 cases. Block Comments using ctrl+shift+c
+  ##Search location with lat long by(https://stackoverflow.com/questions/32504880/street-address-to-geolocation-lat-long)
+  #   geocodeAdddress <- function(address) {
+  #   require(RJSONIO)
+  #   url <- "http://maps.google.com/maps/api/geocode/json?address="
+  #   url <- URLencode(paste(url, address, "&sensor=false", sep = ""))
+  #   x <- fromJSON(url, simplify = FALSE)
+  #   if (x$status == "OK") {
+  #     out <- c(x$results[[1]]$geometry$location$lng,
+  #              x$results[[1]]$geometry$location$lat)
+  #   } else {
+  #     out <- NA
+  #   }
+  #   Sys.sleep(0.2)  # API only allows 5 requests per second
+  #   out
+  # }
+
+#-------------------------------
+
+#Filter out the calls do not belong to the geo boundary of Baltimore
+
+  
+  #Summarize data
+  Low = which(callService[outBound,]$priority == "Low")
+  Medium = which(callService[outBound,]$priority == "Medium")
+  High = which(callService[outBound,]$priority == "High")
+  NonEm = which(callService[outBound,]$priority == "Non-Emergency")
+  Em = which(callService[outBound,]$priority == "Emergency")
+  OutSer =  which(callService[outBound,]$priority == "Out of Service")
+  
+  #description == index of "911 invalid call"
+  Desp = which(callService[outBound,]$description == "911 invalid call")
+  
+  n.Outside = nrow(callService[outBound,])
+  
+  #sum the proportion
+  sum.Outside = list("p.Low"=length(Low)/n.Outside,"p.Medium" =length(Medium)/n.Outside,"p.High" =length(High)/n.Outside,"p.Em" =length(Em)/n.Outside,"p.NonEm" =length(NonEm)/n.Outside,"p.OutSer" =length(OutSer)/n.Outside,"p.Desp" =length(Desp)/n.Outside)
+  sum.Outside = data.frame(sum.Outside)
+  
+  #Proportion of call outside the city boundary
+  p.Outside = nrow(callService[outBound,])/nrow(callService)
+  
+  #------------------------------------------------------
+  
+#------------------------------------------------------
+
+#Filter out the location clled 100: wired. Same loccation
+  # callService$Longitude[outBound,]
+  # m = which(callService$Latitude < BaltimoreGeoBoundary$'1NW' [1]| callService$Latitude>BaltimoreGeoBoundary$`4S`[1]|callService$Longitude> BaltimoreGeoBoundary$`1NW`[2] | callService$Longitude< BaltimoreGeoBoundary$`2NE`[2])
+  # callWrongGeo = callService[m,]
+  # callWrongGeo.Sort = callWrongGeo[ order(callWrongGeo$priority),]
+  callWrongGeo.Loc.100 = callService[callService$incidentLocation == "100",]
+```
+
+```{r Spliting region and draw heat map}
+callWrongGeo.Loc.100$Latitude
+#worked
+
+# NOT WORKING: Region boundary-----------
+boroughs <- readShapePoly("baltcity_line.shp")
+boroughoutline <- fortify(boroughs, region="name")
+layer2<-c(geom_path(data=boroughoutline,aes(long, lat, group=group),colour = "grey40", size=1))#then create an outline layer
+#----------------------------------------------------------------------------
+
+#Draw points on the map with Boundary(have not tested yet)----------
+  hbg <- "Baltimore,MD,US"
+  cityMap <- get_map(location = "Baltimore", maptype = "roadmap", zoom = 11)
+   p <- ggmap(cityMap)+geom_density2d(data = call.Priority.Emerg, 
+      aes(x = Longitude, y = Latitude), size = 0.7 ,color = "blue")+ stat_density2d(data = call.Priority.Emerg, 
+      aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+      bins = 30, geom = "polygon") + scale_fill_gradient(low = "green", high = "red") + 
+      scale_alpha(range = c(0, 0.3), guide = FALSE)
+
+  
+  png(file="Priority.Emferg",width=1200,height=1050) #Try to print some plot
+  p
+  dev.off()
+#---------------------------------------
+ cityMap <- get_map(location = "Baltimore", maptype = "roadmap", zoom = 10)
+  p.weatherStation <- ggmap(cityMap)+geom_point(data=TempGeo, aes(x=LONGITUDE,y=LATITUDE),size = 4,color = "purple") 
+  
+  #//Plot and output the plot
+  png(file="weatherStation.png",width=1200,height=1050) #Try to print some plot
+  p.weatherStation
+  dev.off()
+
+  #Plot weather station on the map, map may looks small. To Upgrade, you may want to creat a interactive map with those data on some website?
+ 
+#//"weatherStation" shows a lot of points outside the city boundary. remove any station outside the ERStation = ?
+  
+#------------------------------------
+# +geom_density2d(data = TempGeo, 
+#     aes(x = LONGITUDE, y = LATITUDE), size = 0.7 ,color = "blue")+ stat_density2d(data = call.Priority.Emerg, 
+#     aes(x = LONGITUDE, y = LATITUDE, fill = ..level.., alpha = ..level..), size = 0.01, 
+#     bins = 30, geom = "polygon") + scale_fill_gradient(low = "green", high = "red") + 
+#     scale_alpha(range = c(0, 0.3), guide = FALSE)
+#     +layer2
+
+
+
+
+#Not working:`panel.margin` is deprecated. 
+q<-qmap(hbg, zoom = 10,maptype = "roadmap")
+q<-q+ geom_point(data=call.Priority.Medium, aes(y=Latitude, x=Longitude))+geom_density2d(data = call.Priority.Medium, 
+    aes(x = Longitude, y = Latitude), size = 0.3)
+q
+#---------------------------------------
+
+city_shp <- readOGR(dsn='Baltcity_20Line', layer='baltcity_line')
+origProj <- city_shp@proj4string ## Store original projection
+
+city_pl_df <- fortify(city_shp, region='LABEL')
+bound_plot <- ggplot(data=city_pl_df, 
+aes(x=long, y=lat, group=group)) +
+geom_polygon(color='gray', fill='lightblue') + 
+coord_equal() + theme_nothing()
+ggplot(bound_plot)
+
+
+library(rgdal)
+library(maptools)
+#library(rgeos)
+install.packages("rgeos", type="source")
+
+#This blocks me.... it cannot be true... stupid...
+gpclibPermit()
+
+## Neighborhood Shape Files read in v1
+nbhds_df <- read.dbf('Neighborhood_202010/nhood_2010.dbf')
+nbhds_shp <- readOGR(dsn='Neighborhood_202010', layer='nhood_2010')
+origProj <- nbhds_shp@proj4string ## Store original projection
+#nbhds_shp <- spTransform(nbhds_shp,CRS("+proj=longlat +datum=WGS84"))
+nbhds_pl_df <- fortify(nbhds_shp, region='LABEL')
+nbhds_plot <-  bound_plot +
+geom_path(data=nbhds_pl_df,color='gray')
+
+
+
+# Germany.map = get_map(location = "Germany", zoom = 6, color="bw")  ## get MAP data
+#  
+# p <- ggmap(Germany.map)
+# p <- p + geom_point(data=dfff, aes(y=lat, x=lon, color=price))
+# p <- p +scale_color_gradient(low = "yellow", high = "red", guide=guide_legend(title = "Price"))
+# p  + theme(axis.title=element_blank(),
+#            axis.text=element_blank(),
+#            axis.ticks=element_blank()) + ggtitle("All Gas Stations along the Autobahn")
+
+```
+
+```{r 3sports import}
+Basketball = read.csv("Basketball.csv",skipNul = T)
+Football = read.csv("Football.csv",skipNul = T)
+Football$ID = c(1:nrow(Football))
+Soccer = read.csv("Soccer.csv",skipNul = T)
+Baseball = read.csv("Baseball.csv",skipNul = T)
+```
+
+```{r clean format of sports}
+hist(Football$attendance,breaks = seq(0,120000,by = 3000)) #Data is a little bit skewed to the left.
+d <- density(Football$attendance,na.rm = TRUE) # returns the density data 
+plot(d) # plots the results
+
+callServiceValidGeo = subset(callService,MissingGeoLocation == 0)
+
+#Label call cases?
+```
+
+```{r display crim activity within k}
+
+#Call inside the boundary of city
+
+
+# :nrow(Basketball)
+BasketballCall = function(BasketballData = Basketball,callData = callService){
+  #Time Format: YYYYMMDDHHMM should have same length
+  GameStartTime = Basketball$StartTime
+  GameEndTime = Basketball$EndTime
+  
+  GameEndEstimate = Basketball$EndEstimate
+  BeforeGame = GameStartTime - 200
+  AfterGame = GameEndTime + 200
+  
+  callBeforeGame<- callServiceValidGeo[0,]
+  callOnGame<- callServiceValidGeo[0,]
+  callAfterGame<- callServiceValidGeo[0,]
+
+  for(j in 1:10){
+
+    callBeforeGame = rbind(callBeforeGame, subset(callServiceValidGeo,callDateTime>BeforeGame[j] & callDateTime<GameStartTime[j]))
+  
+  #During Game
+  callOnGame = rbind(callOnGame, subset(callServiceValidGeo,callDateTime<=GameEndTime[j] & callDateTime>=GameStartTime[j]))
+  
+  #2h After Game
+  callAfterGame = rbind(callAfterGame, subset(callServiceValidGeo,callDateTime>GameEndTime[j] & callDateTime<AfterGame[j]))
+  
+  }
+  #2h Before Game rbind(callBeforeGame,)
+  
+
+  cityMap <- get_map(location = "Baltimore", maptype = "roadmap", zoom = 12)
+  for(i in 1:10){
+    
+      #Because the basketball only has 2 Home game, we focus on the city level. 
+    #War! This analysis may be nonsense due to many cofounding factor.
+    
+    # p.BasketballB <- ggmap(cityMap) +geom_point(data=callBeforeGame, mapping = aes(x=Longitude, y=Latitude,color = factor(priority)),shape = 15,size = 2) 
+    #  p.BasketballO<-ggmap(cityMap) +geom_point(data=callOnGame, mapping = aes(x=Longitude,y=Latitude,color = factor(priority)),shape = 16,size = 2) 
+    #  
+    #   +geom_point(data=callAfterGame$priority, mapping = aes(x=Longitude,y=Latitude,color = factor(priority)),shape = 17,size = 2)
+     
+     p.BasketballB <-ggmap(cityMap) +geom_density2d(data = callBeforeGame, 
+      aes(x = Longitude, y = Latitude), size = 0.7 ,color = "blue")+ stat_density2d(data = callBeforeGame, 
+      aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+      bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+      scale_alpha(range = c(0, 0.3), guide = FALSE)
+     
+     p.BasketballO<-ggmap(cityMap) +geom_density2d(data = callOnGame, 
+      aes(x = Longitude, y = Latitude), size = 0.7 ,color = "blue")+ stat_density2d(data = callOnGame, 
+      aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+      bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+      scale_alpha(range = c(0, 0.3), guide = FALSE)
+     
+     p.BasketballA<-ggmap(cityMap) +geom_density2d(data = callAfterGame, 
+      aes(x = Longitude, y = Latitude), size = 0.7 ,color = "blue")+ stat_density2d(data = callAfterGame, 
+      aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+      bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+      scale_alpha(range = c(0, 0.3), guide = FALSE)
+
+     
+    #//Make name of the a picture
+    #//Plot and output the plot
+    png(file=(paste("Basketball ",i, "After",AfterGame[i],".png",sep = " ")),width=2400,height=2100) #Try to print some plot
+    p.BasketballA
+    dev.off() 
+    
+    #//Plot and output the plot
+    png(file=(paste("Basketball",i, "Before",BeforeGame[i],".png",sep = " ")),width=2400,height=2100) #Try to print some plot
+    p.BasketballB
+    dev.off() 
+  
+    #//Plot and output the plot
+    png(file=(paste("Basketball ",i, "On", callOnGame$callDateTime[i],".png",sep = " ")),width=2400,height=2100) #Try to print some plot
+    p.BasketballO
+    dev.off() 
+    
+  }
+  return()
+}
+
+
+```
+
+
+```{r FootBall}
+FootballCall = function(FootballData = Football,callData = callService){
+  #Time Format: YYYYMMDDHHMM should have same length
+  
+  
+  FootballHome = subset(Football,InMD =="N")
+  HomeStadium = data.frame("Latitude" = 39.277926, "Longitude"=-76.62275)
+  
+  GameStartTime = subset(FootballHome,select = c(ID,StartTime))
+  GameEndTime = subset(FootballHome,select = c(ID,EndTime))
+  
+  BeforeGame = GameStartTime$StartTime - 200
+  AfterGame = GameEndTime$EndTime + 200
+  
+  callBeforeGame<- callServiceValidGeo[0,]
+  callOnGame<- callServiceValidGeo[0,]
+  callAfterGame<- callServiceValidGeo[0,]
+  
+  #HourlyCall = 
+ cityMap <- get_map(location = c(lon = HomeStadium$Longitude,lat = HomeStadium$Latitude), maptype = "satellite", zoom = 12)
+ 
+  for(i in 1:nrow(FootballHome)){
+  # 
+  # #2h before Game
+  # callBeforeGame = subset(callServiceValidGeo,callDateTime>BeforeGame[i]& callDateTime<GameStartTime$StartTime[i])
+  # 
+  # 
+  # #During Game
+  # callOnGame =subset(callServiceValidGeo,callDateTime<=GameEndTime$EndTime[i] & callDateTime>=GameStartTime$StartTime[i])
+  # 
+  # #2h After Game
+  # callAfterGame = subset(callServiceValidGeo,callDateTime>GameEndTime$EndTime[i] & callDateTime<AfterGame[i])
+  
+  # time = seq(BeforeGame[i],AfterGame[i],by = 50)
+  # 
+  # #counts of all per hr vs time
+  # 
+  # callBeforeGame$Game = rep(0,nrow(callBeforeGame))
+  # callOnGame$Game = rep(1,norw(callOnGame))
+  # callAfterGame$Game = rep(2,norw(callAfterGame))
+  # 
+  # callGame = rbind(callBeforeGame,callOnGame,callAfterGame)
+  # 
+  # lm
+  
+  #2h Before Game rbind(callBeforeGame,)
+    
+      #Because the Football only has 2 Home game, we focus on the city level. 
+    #War! This analysis may be nonsense due to many cofounding factor.
+    
+    # cityMap <- get_map(location = c(lon = HomeStadium$Longitude,lat = HomeStadium$Latitude), maptype = "satellite", zoom = 13)
+    
+  #2h before Game
+  callBeforeGame = subset(callServiceValidGeo,callDateTime>BeforeGame[i]& callDateTime<GameStartTime$StartTime[i])
+
+  
+  #During Game
+  callOnGame =subset(callServiceValidGeo,callDateTime<=GameEndTime$EndTime[i] & callDateTime>=GameStartTime$StartTime[i])
+  
+  #2h After Game
+  callAfterGame = subset(callServiceValidGeo,callDateTime>GameEndTime$EndTime[i] & callDateTime<AfterGame[i])
+  
+    
+    # p.FootballB <- ggmap(cityMap) +geom_point(data=callBeforeGame, aes(x=Longitude, y=Latitude),size = 5,color ="blue") 
+    # p.FootballO <- ggmap(cityMap) +geom_point(data=callOnGame, aes(x=Longitude, y=Latitude),size = 5,color ="blue") 
+    #  
+    # p.FootballA <-ggmap(cityMap)  +geom_point(data=callAfterGame, aes(x=Longitude, y=Latitude),size = 5,color ="blue")
+     
+         p.FootballB <-ggmap(cityMap) +geom_density2d(data = callBeforeGame, 
+      aes(x = Longitude, y = Latitude), size = 0.8 ,color = "green")+ stat_density2d(data = callBeforeGame, 
+      aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+      bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+      scale_alpha(range = c(0, 0.3), guide = FALSE)+annotate("text", x = HomeStadium$Longitude,y = HomeStadium$Latitude, label = paste("Start:",GameStartTime$StartTime[i]),colour = "white",size = 10)+ annotate("rect", xmin = HomeStadium$Longitude-0.005, xmax = HomeStadium$Longitude+0.005, ymin = HomeStadium$Latitude-0.005, ymax = HomeStadium$Latitude+0.005,
+  alpha = .5)
+     
+     p.FootballO<-ggmap(cityMap) +geom_density2d(data = callOnGame, 
+      aes(x = Longitude, y = Latitude), size = 0.8 ,color = "green")+ stat_density2d(data = callOnGame, 
+      aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+      bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+      scale_alpha(range = c(0, 0.3), guide = FALSE)+annotate("text", x = HomeStadium$Longitude,y = HomeStadium$Latitude, label = paste("Start:",GameStartTime$StartTime[i]),colour = "white",size = 10)+ annotate("rect", xmin = HomeStadium$Longitude-0.005, xmax = HomeStadium$Longitude+0.005, ymin = HomeStadium$Latitude-0.005, ymax = HomeStadium$Latitude+0.005,
+  alpha = .5)
+     
+     p.FootballA<-ggmap(cityMap) +geom_density2d(data = callAfterGame, 
+      aes(x = Longitude, y = Latitude), size = 0.8 ,color = "green")+ stat_density2d(data = callAfterGame, 
+      aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+      bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+      scale_alpha(range = c(0, 0.3), guide = FALSE)+annotate("text", x = HomeStadium$Longitude,y = HomeStadium$Latitude, label = paste("Start:",GameStartTime$StartTime[i]),colour = "white",size = 10)+ annotate("rect", xmin = HomeStadium$Longitude-0.005, xmax = HomeStadium$Longitude+0.005, ymin = HomeStadium$Latitude-0.005, ymax = HomeStadium$Latitude+0.005,
+  alpha = .5)
+     
+     # p.FootballB <-ggmap(cityMap) +geom_density2d(data = callBeforeGame, 
+     #  aes(x = Longitude, y = Latitude), size = 0.7 ,color = "yellow")+ stat_density2d(data = callBeforeGame, 
+     #  aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+     #  bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+     #  scale_alpha(range = c(0, 0.3), guide = FALSE)
+     # 
+     # p.FootballO<-ggmap(cityMap) +geom_density2d(data = callOnGame, 
+     #  aes(x = Longitude, y = Latitude), size = 0.7 ,color = "yellow")+ stat_density2d(data = callOnGame, 
+     #  aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+     #  bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+     #  scale_alpha(range = c(0, 0.3), guide = FALSE)
+     # 
+     # p.FootballA<-ggmap(cityMap) +geom_density2d(data = callAfterGame, 
+     #  aes(x = Longitude, y = Latitude), size = 0.7 ,color = "yellow")+ stat_density2d(data = callAfterGame, 
+     #  aes(x = Longitude, y = Latitude, fill = ..level.., alpha = ..level..), size = 0.01, 
+     #  bins = 30, geom = "polygon") + scale_fill_gradient(low = "blue", high = "red") + 
+     #  scale_alpha(range = c(0, 0.3), guide = FALSE)
+
+     
+     #//if (nrow(callAfterGame)>0 &nrow(callOnGame)>0&nrow(callBeforeGame)>0){
+    #//Make name of the a picture
+    #//Plot and output the plot
+     time = GameStartTime$StartTime[i]
+    png(file=(paste("Football ",i, time,"After",time,".png",sep = " ")),width=2400,height=2100) #Try to print some plot
+    print(p.FootballA)
+    dev.off() 
+    
+    #//Plot and output the plot
+    png(file=(paste("Football",i,time, "Before",time,".png",sep = " ")),width=2400,height=2100) #Try to print some plot
+    print(p.FootballB)
+    dev.off() 
+  
+    #//Plot and output the plot
+    png(file=(paste("Football ",i,time, "On",time,".png",sep = " ")),width=2400,height=2100) #Try to print some plot
+    print(p.FootballO)
+    dev.off() 
+    
+    # print(is.null(p.FootballA), is.null(p.FootballO) ,is.null( p.FootballB))
+
+   #// }
+  }
+   return()
+}
+
+library(xlsx)
+write.xlsx(FootballHome, "C:/Users/schu37/Desktop/FootballHome.xlsx")
+
+```
+
+```{r call function}
+#CallFunctions
+FootballCall()
+
+summary(subset (callService,description =="911 invalid call"))
+
+```
+

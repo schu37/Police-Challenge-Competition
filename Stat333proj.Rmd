@@ -1,0 +1,128 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r datafinding}
+
+library(dplyr)
+library(ggplot2)
+police = read.csv("911_Calls_for_Service.csv",header=TRUE)
+football = read.csv("Football.csv",header=TRUE)
+weather = read.csv("GHCN-Daily.csv",header=TRUE) 
+policebackup=police
+```
+
+```{r wrangling}
+
+police$date = substr( police$callDateTime, 0, 10)
+police$mm=as.integer(substr(police$date,0,2))
+police$dd=as.integer(substr(police$date,4,5))
+police$yyyy=as.integer(substr(police$date,7,10))
+police$date0=paste0(police$yyyy,"/",police$mm,"/",police$dd)
+football$date0=paste0(football$yyyy,"/",football$mm,"/",football$dd)
+football$won=1
+football$won[which(football$win=="L")]=0
+football$home=1
+football$home[which(football$InMD=="N")]=0
+football$weekend=0
+football$weekend[which(football$day %in% c("Sun","Sat"))]=1
+football$weekendc="N"
+football$weekendc[which(football$day %in% c("Sun","Sat"))]="Y"
+ 
+weather$date0=as.character(weather$DATE)
+
+weather$date00=as.character(weather$DATE)
+#weather$yyyy=substring(weather$date00,nchar(weather$date00)-3,nchar(weather$date00))
+#weather$date0=
+
+
+weather0=weather[which(weather$date0 %in% football$date0),c(7,9,11)]
+weather0$precip=0
+weather0$precip[which(weather0$PRCP>0)]=1
+weather0$precipc="N"
+weather0$precipc[which(weather0$PRCP>0)]="Y"
+#police[1,]  #to get first row
+
+police1=police[which(police$date0 %in% football$date0 & police$priority %in% c("Non-Emergency","Low","Medium","High","Emergency","Out of Service")),]
+tablepolice=as.data.frame(table(police1$date0))
+names(tablepolice)[1]="date0"
+tablepolice$date0= as.character(tablepolice$date0)
+
+data.join0=full_join(football,tablepolice,by="date0")
+data.join=full_join(data.join0,weather0,by="date0")
+attach(data.join)
+```
+
+```{r analysis}
+
+lm1=lm(Freq~won+abs(gap)+won*abs(gap)+StartTimeH+home+weekend+precip+TAVG)
+resid1=Freq-predict(lm1,data.join,type="response")
+data.join$residuals1=resid1
+
+lm2=lm(Freq~gap+StartTimeH+home+weekend+precip+TAVG)
+resid2=Freq-predict(lm2,data.join,type="response")
+data.join$residuals2=resid2
+data.join$residuals2scaled=resid2/sd(Freq)
+attach(data.join)
+```
+\newpage
+```{r summary} 
+
+summary(lm2)
+summary(lm1)
+```
+
+```{r figures}
+
+plot(resid1~abs(gap))
+plot(resid1~InMD)
+plot(resid1~win)
+
+
+plot(gap,residuals2)
+
+plot(abs(gap),residuals1)
+
+hist(StartTimeH,main="Game Start Time (24hr)")
+plot(density(resid1),main="Plot of Residuals")
+plot(density(lm1$residuals),main="Plot of Residuals")
+hist(lm1$residuals,main="Plot of Residuals")
+
+table(win)
+table(InMD)
+table(weekendc)
+hist(TAVG,main="Average Temperature")
+hist(abs(gap), main="Score Difference")
+table(precipc)
+
+lm0=lm(Freq~gap)
+summary(lm0)
+plot(Freq~gap, main="Total 911 calls (Freq) x Score Differential (gap)")
+abline(lm0,col="red")
+legend(-36,3060,legend=c("Simple LSRL:\np-val=0.71"),col=c("red"),lty=c(1),cex=.6)
+
+ggplot(data=data.join, aes(x=abs(gap), y=Freq, group = win, colour = win)) +
+  geom_point()
+
+plot(gap, residuals2, main = "Residuals x Score Differential (gap)",ylab="Residuals")
+abline(0,0)
+lmtest=lm(residuals2~gap)
+abline(lmtest, col="red")
+
+plot(TAVG, residuals2, main = "Residuals x Average Temperature (TAVG)",ylab="Residuals")
+abline(0,0)
+lmtest=lm(residuals2~TAVG)
+abline(lmtest, col="red")
+
+boxplot(residuals2~weekendc, main = "Residuals x Weekend (weekend)", xlab = "Was the game on the weekend?",ylab="Residuals")
+boxplot(residuals2~InMD, main = "Residuals x Home (home)", xlab = "Was the game at home?",ylab="Residuals")
+boxplot(residuals2~precipc, main = "Residuals x Precipitation (precip)", xlab = "Did it rain?",ylab="Residuals")
+plot(StartTimeH, residuals2, main = "Residuals x Start Time (StartTimeH)", xlab = "Hour of the Day",ylab="Residuals")
+abline(0,0,col="red")
+```
